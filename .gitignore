@@ -1,0 +1,25 @@
+# Ambiente Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Dados pesados — NÃO commitar
+data/zips/
+data/extracted/
+data/incorporadoras.csv
+data/leads_incorporadoras.xlsx
+data/incorporadoras.db
+
+# Dados leves — pode commitar (cabem no GitHub <100MB)
+!data/incorporadoras_enriquecido.parquet
+!data/incorporadoras_socios.csv
+!data/datasette_metadata.json
+
+# Segredos do Streamlit (nunca commitar)
+.streamlit/secrets.toml
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
