@@ -56,11 +56,31 @@ def carregar() -> tuple[pd.DataFrame, pd.DataFrame]:
         st.error(f"Parquet não encontrado: {PARQUET}. Rode qualificar_leads.py primeiro.")
         st.stop()
     df = pd.read_parquet(PARQUET)
-    soc = pd.read_csv(SOCIOS_CSV, dtype={"cnpj_basico": str, "cpf_cnpj_socio": str})
+    # Converter categóricos pra string (Streamlit/pandas3 às vezes não lida bem com Categorical)
+    for col in ["bucket_capital", "bucket_idade", "regiao"]:
+        if col in df.columns and str(df[col].dtype) == "category":
+            df[col] = df[col].astype(str)
+    # Garantir que CNPJ é string limpa
+    if "cnpj" in df.columns:
+        df["cnpj"] = df["cnpj"].fillna("").astype(str)
+
+    if not SOCIOS_CSV.exists():
+        soc = pd.DataFrame(columns=[
+            "cnpj_basico", "tipo_socio", "nome_socio", "cpf_cnpj_socio",
+            "qualificacao_socio", "data_entrada", "pais",
+            "nome_representante", "qualificacao_representante", "faixa_etaria",
+        ])
+    else:
+        soc = pd.read_csv(SOCIOS_CSV, dtype={"cnpj_basico": str, "cpf_cnpj_socio": str})
     return df, soc
 
 
-df, socios = carregar()
+try:
+    df, socios = carregar()
+except Exception as e:
+    st.error(f"Erro ao carregar dados: {e}")
+    st.exception(e)
+    st.stop()
 
 # ---------- Sidebar: filtros ----------
 st.sidebar.header("🔍 Filtros")
@@ -107,9 +127,9 @@ if ufs:
 if regioes:
     mask &= df["regiao"].isin(regioes)
 if bucket_capital:
-    mask &= df["bucket_capital"].astype(str).isin(bucket_capital)
+    mask &= df["bucket_capital"].isin(bucket_capital)
 if bucket_idade:
-    mask &= df["bucket_idade"].astype(str).isin(bucket_idade)
+    mask &= df["bucket_idade"].isin(bucket_idade)
 if so_matriz:
     mask &= df["eh_matriz"]
 if so_com_email:
@@ -186,16 +206,19 @@ if "capital_social" in pagina_df.columns:
         lambda v: f"R$ {v:,.0f}" if pd.notna(v) else ""
     )
 
-st.dataframe(
-    pagina_df,
-    use_container_width=True,
-    hide_index=True,
-    column_config={
-        "lead_score": st.column_config.ProgressColumn(
-            "Score", min_value=0, max_value=100, format="%d"
-        ),
-    },
-)
+try:
+    st.dataframe(
+        pagina_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "lead_score": st.column_config.ProgressColumn(
+                "Score", min_value=0, max_value=100, format="%d"
+            ),
+        },
+    )
+except Exception:
+    st.dataframe(pagina_df, use_container_width=True, hide_index=True)
 
 # ---------- Detalhes da empresa ----------
 st.subheader("🔎 Detalhes")
@@ -209,36 +232,60 @@ if opcoes_cnpj:
             f"{filtrado.loc[filtrado['cnpj']==c, 'razao_social'].iloc[0]}"
         ),
     )
+    def _v(reg, k, default=""):
+        """Acesso defensivo: retorna default se None/nan/missing."""
+        if k not in reg:
+            return default
+        val = reg[k]
+        try:
+            if pd.isna(val):
+                return default
+        except (TypeError, ValueError):
+            pass
+        return val
+
     if cnpj_sel:
         registro = filtrado[filtrado["cnpj"] == cnpj_sel].iloc[0]
         col1, col2 = st.columns(2)
         with col1:
-            st.markdown(f"### {registro['razao_social']}")
-            if pd.notna(registro.get("nome_fantasia")):
-                st.caption(registro["nome_fantasia"])
-            st.write(f"**CNPJ:** `{registro['cnpj']}`")
-            st.write(f"**Score:** {registro['lead_score']}")
-            st.write(f"**Motivos:** {registro['lead_score_motivos']}")
-            st.write(
-                f"**Capital social:** R$ {registro['capital_social']:,.2f}"
-            )
-            st.write(f"**Idade:** {registro['idade_anos']} anos")
-            st.write(f"**Tipo:** {registro['matriz_filial']}")
-            if pd.notna(registro.get("nome_grupo_economico")):
-                st.write(f"**Grupo:** {registro['nome_grupo_economico']}")
-                st.write(f"**Empresas no grupo:** {registro['qtd_empresas_grupo']}")
+            st.markdown(f"### {_v(registro, 'razao_social', '(sem razão social)')}")
+            fantasia = _v(registro, "nome_fantasia")
+            if fantasia:
+                st.caption(str(fantasia))
+            st.write(f"**CNPJ:** `{_v(registro, 'cnpj')}`")
+            st.write(f"**Score:** {_v(registro, 'lead_score', 0)}")
+            st.write(f"**Motivos:** {_v(registro, 'lead_score_motivos')}")
+            cap = _v(registro, "capital_social", 0)
+            st.write(f"**Capital social:** R$ {float(cap):,.2f}")
+            idade = _v(registro, "idade_anos")
+            if idade != "":
+                st.write(f"**Idade:** {idade} anos")
+            st.write(f"**Tipo:** {_v(registro, 'matriz_filial')}")
+            grupo = _v(registro, "nome_grupo_economico")
+            if grupo:
+                st.write(f"**Grupo:** {grupo}")
+                st.write(f"**Empresas no grupo:** {_v(registro, 'qtd_empresas_grupo')}")
         with col2:
-            st.write(f"**Endereço:** {registro['logradouro']}, {registro['numero']}")
-            st.write(f"{registro['bairro']} — {registro['municipio']}/{registro['uf']}")
-            st.write(f"**CEP:** {registro['cep']}")
-            st.write(f"**Telefone:** ({registro['ddd1']}) {registro['telefone1']}")
-            st.write(f"**Email:** {registro['email']}")
-            st.write(f"**CNAE principal:** {registro['cnae_principal']}")
-            if pd.notna(registro.get("cnae_secundario")):
-                st.write(f"**CNAEs secundários:** {registro['cnae_secundario']}")
+            st.write(
+                f"**Endereço:** {_v(registro, 'logradouro')}, {_v(registro, 'numero')}"
+            )
+            st.write(
+                f"{_v(registro, 'bairro')} — "
+                f"{_v(registro, 'municipio')}/{_v(registro, 'uf')}"
+            )
+            st.write(f"**CEP:** {_v(registro, 'cep')}")
+            st.write(
+                f"**Telefone:** ({_v(registro, 'ddd1')}) {_v(registro, 'telefone1')}"
+            )
+            st.write(f"**Email:** {_v(registro, 'email')}")
+            st.write(f"**CNAE principal:** {_v(registro, 'cnae_principal')}")
+            cnae_sec = _v(registro, "cnae_secundario")
+            if cnae_sec:
+                st.write(f"**CNAEs secundários:** {cnae_sec}")
 
         st.markdown("#### 👥 Quadro societário")
-        socios_emp = socios[socios["cnpj_basico"] == registro["cnpj_basico"]]
+        cnpj_basico_sel = _v(registro, "cnpj_basico")
+        socios_emp = socios[socios["cnpj_basico"] == cnpj_basico_sel] if cnpj_basico_sel else socios.iloc[0:0]
         if len(socios_emp):
             st.dataframe(
                 socios_emp[
@@ -252,11 +299,12 @@ if opcoes_cnpj:
             st.info("Nenhum sócio encontrado.")
 
         # Outras empresas do mesmo grupo
-        if pd.notna(registro.get("nome_grupo_economico")):
+        nome_grupo = _v(registro, "nome_grupo_economico")
+        if nome_grupo:
             st.markdown("#### 🕸️ Outras empresas do grupo")
             grupo = df[
-                (df["nome_grupo_economico"] == registro["nome_grupo_economico"])
-                & (df["cnpj"] != registro["cnpj"])
+                (df["nome_grupo_economico"] == nome_grupo)
+                & (df["cnpj"] != _v(registro, "cnpj"))
             ].sort_values("capital_social", ascending=False)
             if len(grupo):
                 st.dataframe(
