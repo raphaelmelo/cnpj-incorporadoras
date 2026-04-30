@@ -182,7 +182,7 @@ st.sidebar.caption(
 st.title("🏗️ Leads — Incorporadoras")
 
 # ---------- Tabs (views prontas) ----------
-TABS = [
+VIEWS = [
     "📖 README",
     "🔥 Top 100",
     "🆕 Recém-criadas",
@@ -194,7 +194,9 @@ TABS = [
     "🚫 Lista negra",
 ]
 
-tabs = st.tabs(TABS)
+# Radio na sidebar em vez de st.tabs porque tabs renderiza TUDO upfront
+# e estoura memória de 1GB no plano free do Streamlit Cloud.
+view_atual = st.sidebar.radio("📂 View", VIEWS, key="view_radio")
 
 
 COLS_PRINCIPAIS = [
@@ -336,69 +338,67 @@ def render_tabela(d: pd.DataFrame, key_prefix: str, extra_cols: list[str] | None
 
     st.caption(f"📦 {len(d_export):,} leads selecionados pra exportar")
 
-    # ---------- Botões de export ----------
-    b1, b2, b3, b4, b5 = st.columns(5)
-    with b1:
+    # ---------- Export LAZY: escolhe formato e GERA só ao clicar ----------
+    formato = st.selectbox(
+        "Formato de exportação",
+        [
+            "📄 CSV completo (todas as colunas)",
+            "📊 XLSX formatado (Excel com filtros)",
+            "📞 Lista de contatos (CRM-friendly)",
+            "☎️ Telefones .txt (discador)",
+            "✉️ Emails .txt (cadência)",
+        ],
+        key=f"fmt_{key_prefix}",
+    )
+
+    if st.button("⚙️ Gerar arquivo", key=f"gerar_{key_prefix}", width="stretch"):
+        with st.spinner("Preparando arquivo..."):
+            if formato.startswith("📄"):
+                payload = d_export[cols].to_csv(index=False).encode("utf-8")
+                fname = f"{key_prefix}_{len(d_export)}.csv"
+                mime = "text/csv"
+            elif formato.startswith("📊"):
+                payload = gerar_xlsx_bytes(d_export, cols)
+                fname = f"{key_prefix}_{len(d_export)}.xlsx"
+                mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            elif formato.startswith("📞"):
+                contatos = gerar_lista_contatos(d_export)
+                payload = contatos.to_csv(index=False).encode("utf-8")
+                fname = f"{key_prefix}_contatos_{len(contatos)}.csv"
+                mime = "text/csv"
+            elif formato.startswith("☎️"):
+                tels = (
+                    d_export.apply(
+                        lambda r: _limpar_tel(r.get("ddd1"), r.get("telefone1")),
+                        axis=1,
+                    )
+                    .replace("", pd.NA).dropna().drop_duplicates()
+                )
+                payload = "\n".join(tels.tolist()).encode("utf-8")
+                fname = f"{key_prefix}_tels_{len(tels)}.txt"
+                mime = "text/plain"
+            else:  # emails
+                email_re = r"^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$"
+                emails = (
+                    d_export["email"].fillna("").str.strip()
+                    .where(d_export["email"].fillna("").str.contains(
+                        email_re, regex=True, case=False, na=False))
+                    .dropna().drop_duplicates()
+                )
+                payload = "\n".join(emails.tolist()).encode("utf-8")
+                fname = f"{key_prefix}_emails_{len(emails)}.txt"
+                mime = "text/plain"
+            st.session_state[f"payload_{key_prefix}"] = (payload, fname, mime)
+
+    if f"payload_{key_prefix}" in st.session_state:
+        payload, fname, mime = st.session_state[f"payload_{key_prefix}"]
         st.download_button(
-            "📄 CSV completo",
-            data=d_export[cols].to_csv(index=False).encode("utf-8"),
-            file_name=f"{key_prefix}_{len(d_export)}.csv",
-            mime="text/csv",
-            key=f"dl_csv_{key_prefix}",
-            use_container_width=True,
-        )
-    with b2:
-        st.download_button(
-            "📊 XLSX formatado",
-            data=gerar_xlsx_bytes(d_export, cols),
-            file_name=f"{key_prefix}_{len(d_export)}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key=f"dl_xlsx_{key_prefix}",
-            use_container_width=True,
-        )
-    with b3:
-        contatos = gerar_lista_contatos(d_export)
-        st.download_button(
-            "📞 Lista de contatos (CRM)",
-            data=contatos.to_csv(index=False).encode("utf-8"),
-            file_name=f"{key_prefix}_contatos_{len(contatos)}.csv",
-            mime="text/csv",
-            key=f"dl_contatos_{key_prefix}",
-            use_container_width=True,
-            help="CSV enxuto: razão, CNPJ, telefone, e-mail, WhatsApp URL — pronto pra CRM/discador",
-        )
-    with b4:
-        # Lista só de telefones, 1 por linha — pra discador
-        tels = (
-            d_export.apply(
-                lambda r: _limpar_tel(r.get("ddd1"), r.get("telefone1")), axis=1
-            )
-            .replace("", pd.NA).dropna().drop_duplicates()
-        )
-        st.download_button(
-            "☎️ Telefones (txt)",
-            data="\n".join(tels.tolist()).encode("utf-8"),
-            file_name=f"{key_prefix}_tels_{len(tels)}.txt",
-            mime="text/plain",
-            key=f"dl_tel_{key_prefix}",
-            use_container_width=True,
-            help=f"{len(tels)} telefones únicos, 1 por linha — cole no discador",
-        )
-    with b5:
-        # Lista só de emails válidos, 1 por linha — pra cadência
-        emails = (
-            d_export["email"].fillna("").str.strip()
-            .where(d_export["email"].fillna("").str.contains(r"^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$", regex=True, case=False, na=False))
-            .dropna().drop_duplicates()
-        )
-        st.download_button(
-            "✉️ Emails (txt)",
-            data="\n".join(emails.tolist()).encode("utf-8"),
-            file_name=f"{key_prefix}_emails_{len(emails)}.txt",
-            mime="text/plain",
-            key=f"dl_email_{key_prefix}",
-            use_container_width=True,
-            help=f"{len(emails)} emails únicos válidos — cole numa cadência de email",
+            f"💾 Baixar {fname}",
+            data=payload,
+            file_name=fname,
+            mime=mime,
+            key=f"dl_{key_prefix}",
+            width="stretch",
         )
 
     # ---------- Tabela com seleção ----------
@@ -429,7 +429,7 @@ def render_tabela(d: pd.DataFrame, key_prefix: str, extra_cols: list[str] | None
         pagina_df.insert(0, "✓", False)
         edited = st.data_editor(
             pagina_df,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             disabled=[c for c in pagina_df.columns if c != "✓"],
             key=f"editor_{key_prefix}",
@@ -451,7 +451,7 @@ def render_tabela(d: pd.DataFrame, key_prefix: str, extra_cols: list[str] | None
         try:
             st.dataframe(
                 pagina_df,
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 column_config={
                     "lead_score": st.column_config.ProgressColumn(
@@ -460,11 +460,11 @@ def render_tabela(d: pd.DataFrame, key_prefix: str, extra_cols: list[str] | None
                 },
             )
         except Exception:
-            st.dataframe(pagina_df, use_container_width=True, hide_index=True)
+            st.dataframe(pagina_df, width="stretch", hide_index=True)
 
 
-# ---------- Conteúdo de cada tab ----------
-with tabs[0]:  # README
+# ---------- Conteúdo da view selecionada (lazy: só renderiza a ativa) ----------
+if view_atual == "📖 README":
     st.markdown("""
 ### 📖 Como usar
 
@@ -523,28 +523,28 @@ Abaixo de qualquer view, escolha um CNPJ no dropdown para ver:
 - Links de busca: Google, LinkedIn, WhatsApp
 """)
 
-with tabs[1]:
+elif view_atual == "🔥 Top 100":
     st.markdown("### 🔥 Top 100 — Quem ligar amanhã")
     st.caption("Os 100 leads com maior lead_score")
     render_tabela(view_top_100(df_base), "top100")
 
-with tabs[2]:
+elif view_atual == "🆕 Recém-criadas":
     st.markdown("### 🆕 Recém-criadas — Compram tudo")
     st.caption("Empresas com <1 ano e capital social > R$ 500k. "
                "Acabaram de abrir, momento de compra.")
     render_tabela(view_recem(df_base), "recem")
 
-with tabs[3]:
+elif view_atual == "💰 Grandes":
     st.markdown("### 💰 Grandes consolidadas — Tickets altos")
     st.caption("Capital > R$ 10M, mais de 10 anos de mercado, matriz.")
     render_tabela(view_grandes(df_base), "grandes")
 
-with tabs[4]:
+elif view_atual == "📞 Contatáveis":
     st.markdown("### 📞 Contatáveis — Com email e telefone validados")
     st.caption("Score ≥60 + email regex válido + telefone regex válido.")
     render_tabela(view_contataveis(df_base), "contataveis")
 
-with tabs[5]:
+elif view_atual == "🕸️ Grupos":
     st.markdown("### 🕸️ Grupos econômicos — Holdings + SPEs")
     st.caption("Empresas conectadas via sócios em comum (componentes conexos no grafo). "
                "Útil pra evitar prospectar a mesma empresa N vezes.")
@@ -554,19 +554,18 @@ with tabs[5]:
         extra_cols=["nome_grupo_economico", "qtd_empresas_grupo"],
     )
 
-ufs_top = ["SP", "RJ", "MG", "PR", "SC"]
-for i, uf in enumerate(ufs_top):
-    with tabs[6 + i]:
-        st.markdown(f"### 🏘️ Estado {uf}")
-        st.caption(f"Todas as incorporadoras qualificadas em {uf}, ordenadas por score.")
-        render_tabela(view_uf(view_qualificados(df_base), uf), f"uf_{uf}")
+elif view_atual in ("🏘️ SP", "🏘️ RJ", "🏘️ MG", "🏘️ PR", "🏘️ SC"):
+    uf = view_atual.split()[-1]
+    st.markdown(f"### 🏘️ Estado {uf}")
+    st.caption(f"Todas as incorporadoras qualificadas em {uf}, ordenadas por score.")
+    render_tabela(view_uf(view_qualificados(df_base), uf), f"uf_{uf}")
 
-with tabs[11]:
+elif view_atual == "📊 Base completa":
     st.markdown("### 📊 Base completa qualificada")
     st.caption("Todos os leads exceto a lista negra. Use a busca lateral pra filtrar.")
     render_tabela(view_qualificados(df_base), "base")
 
-with tabs[12]:
+elif view_atual == "🚫 Lista negra":
     st.markdown("### 🚫 Lista negra — Excluídos automaticamente")
     st.caption("Use isso pra conferir se algum lead bom não foi excluído por engano.")
     render_tabela(
@@ -692,7 +691,7 @@ if opcoes_cnpj:
             socios_show["qtd_outras_empresas"] = (
                 socios_show["qtd_outras_empresas"].fillna(1).astype(int) - 1
             )
-            st.dataframe(socios_show, hide_index=True, use_container_width=True)
+            st.dataframe(socios_show, hide_index=True, width="stretch")
 
             # Link LinkedIn pra cada sócio (top 5)
             st.markdown("**🔗 Buscar sócios no LinkedIn:**")
@@ -718,7 +717,7 @@ if opcoes_cnpj:
                 st.dataframe(
                     outras[["razao_social", "cnpj", "uf", "capital_social", "lead_score"]],
                     hide_index=True,
-                    use_container_width=True,
+                    width="stretch",
                 )
 else:
     st.info("Use a busca lateral ou navegue pelas views acima.")
